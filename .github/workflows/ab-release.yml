@@ -18,6 +18,9 @@ permissions:
 
 env:
   TRUNK_VERSION: 0.21.14
+  # Upstream's packaging gate is Cloudflare's 24 MiB per-file cap; this bundle is served by our own
+  # host with brotli, so the gate only has to catch runaway growth (upstream main is ~26.4 MB raw).
+  PHOTOCRAFT_WASM_MAX_BYTES: "31457280"
 
 jobs:
   web:
