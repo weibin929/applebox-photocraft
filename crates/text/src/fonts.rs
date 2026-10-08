@@ -53,6 +53,16 @@ pub fn fallback_candidates(order: &[crate::cjk::CjkScript; 4]) -> Vec<&'static s
     v
 }
 
+/// Register font data with the process-wide engine ([`crate::shared`]) at run time: the web build
+/// has no system fonts, so an embedding page can hand over a font (e.g. a CJK face) after start-up.
+/// A family named in the fallback lists (such as "Noto Sans TC") also fills in missing glyphs for
+/// every other family. Returns the families added; an error when the data holds no usable face.
+/// Text layers laid out before keep their old layout until re-rendered (`type.updateAllTextLayers`).
+pub fn add_runtime_font(bytes: Vec<u8>) -> Result<Vec<String>, String> {
+    let families = crate::shared().lock().unwrap_or_else(|e| e.into_inner()).fonts.register_font_data(bytes);
+    if families.is_empty() { Err("no usable font face in the data".into()) } else { Ok(families) }
+}
+
 /// One face in the database (for font menus).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FaceInfo {

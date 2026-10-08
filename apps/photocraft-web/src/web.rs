@@ -120,6 +120,27 @@ pub fn host_control(id: u32, method: String, params_json: String) {
     });
 }
 
+/// Host → editor: a font (TTF/OTF bytes) for type layers; the web build has no system fonts. A family
+/// in the fallback lists ("Noto Sans TC") also fills in glyphs other fonts lack. Text layers
+/// already in the document are laid out again (`type.updateAllTextLayers`), so send fonts before
+/// opening a document to keep that out of its history.
+#[wasm_bindgen]
+pub fn ab_add_font(name: String, bytes: Vec<u8>) {
+    match ab_bridge::add_runtime_font(bytes) {
+        Ok(families) => {
+            log::info!("font {name}: {families:?}");
+            let (req, _reply) = ControlRequest::new("engine.execute", serde_json::json!({"command": "type.updateAllTextLayers"}));
+            CONTROL_TX.with(|t| t.borrow().as_ref().map(|tx| tx.send(req)));
+            HOST_INBOX.with(|h| {
+                if let Some((_, ctx)) = &*h.borrow() {
+                    ctx.request_repaint();
+                }
+            });
+        }
+        Err(e) => log::error!("font {name}: {e}"),
+    }
+}
+
 /// Editor → host: `cb(json)` for replies and `lc-pc-state` digests.
 #[wasm_bindgen]
 pub fn set_host_events(cb: js_sys::Function) {

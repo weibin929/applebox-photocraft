@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 use crate::PhotocraftApp;
 use crate::state::Tool;
 
+/// Fonts the host hands over at run time (the web build has no system fonts).
+pub use photocraft_text::fonts::add_runtime_font;
+
 /// Control methods the host may call. Anything else is refused before it reaches `control::handle`.
 pub const METHODS: &[&str] = &["engine.execute", "ui.set", "ui.key", "ui.dialog.confirm", "ui.dialog.cancel", "ab.layer.thumbs", "ab.toolOptions"];
 /// `ui.set` fields the host may change (a subset of `control::UI_SET_FIELDS`).

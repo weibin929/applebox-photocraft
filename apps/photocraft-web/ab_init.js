@@ -3,6 +3,7 @@
 //   host → editor  { type: 'lc-pc-open', name, bytes }   open a file (ArrayBuffer)
 //   host → editor  { type: 'lc-pc-command', cmd }        'save_psd' | 'export_png'
 //   host → editor  { type: 'lc-pc-call', id, method, params }   bridge v2: one control request (allow-listed)
+//   host → editor  { type: 'lc-pc-font', name, bytes }   a font for type layers (ArrayBuffer; send before lc-pc-open)
 //   editor → host  { type: 'lc-pc-reply', id, ok, result | error }
 //   editor → host  { type: 'lc-pc-state', seq, … }        the editor's state when it changed; order by seq
 //   editor → host  { type: 'lc-pc-progress', loaded, total }
@@ -37,6 +38,7 @@ export default function initializer() {
       if (m.type === 'lc-pc-open' && m.bytes) b.open_bytes(String(m.name || 'document'), new Uint8Array(m.bytes));
       else if (m.type === 'lc-pc-command') b.host_command(String(m.cmd || ''));
       else if (m.type === 'lc-pc-call' && v2) b.host_control(m.id >>> 0, String(m.method || ''), JSON.stringify(m.params || {}));
+      else if (m.type === 'lc-pc-font' && m.bytes && typeof b.ab_add_font === 'function') b.ab_add_font(String(m.name || 'font'), new Uint8Array(m.bytes));
     });
     post({ type: 'lc-pc-ready', backend: navigator.gpu ? 'webgpu' : 'webgl2', bridge: v2 ? 2 : 1 });
   }
