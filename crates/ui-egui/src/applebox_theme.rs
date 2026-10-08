@@ -18,6 +18,7 @@ pub mod cis {
     pub const PINK: Color32 = Color32::from_rgb(0xFF, 0x3D, 0x7F); // accent: selection, focus, pressed
     pub const PINK_TEXT: Color32 = Color32::from_rgb(0xFF, 0x6B, 0xA3); // pink text, links
     pub const ON_PINK: Color32 = NIGHT; // text on the pink fill (white would only reach 3.37:1)
+    pub const SEL_BG: Color32 = Color32::from_rgb(0x3A, 0x1C, 0x30); // selected rows / pressed (keeps INK readable)
     pub const RADIUS_SMALL: u8 = 10;
     pub const RADIUS_CARD: u8 = 18;
 }
@@ -66,12 +67,46 @@ pub fn applebox_spacing(s: &mut egui::Spacing) {
     s.window_margin = egui::Margin::same(12);
 }
 
+/// The app's own colour tokens (most panels paint from these, not from egui's `Visuals`) mapped to
+/// the host palette. Layout flags (`pro`, `bevel`, radii) stay as the active theme set them;
+/// warning/danger and the scope colours stay too (their meaning is the colour).
+pub fn applebox_tokens(base: crate::theme::Tokens) -> crate::theme::Tokens {
+    use cis::*;
+    let mut t = base;
+    t.chrome = NIGHT;
+    t.canvas = NIGHT;
+    t.canvas_dot = LINE;
+    t.dock = NIGHT;
+    t.card = PANEL;
+    t.card_border = LINE;
+    t.field = NIGHT;
+    t.field_border = LINE_2;
+    t.hover = HOVER;
+    t.pressed = SEL_BG;
+    t.text = INK;
+    t.text_dim = INK_2;
+    t.text_faint = DIM;
+    t.icon = INK_2;
+    t.accent = PINK;
+    t.accent_soft = SEL_BG;
+    t.accent_border = PINK;
+    t.accent_text = PINK_TEXT;
+    t.separator = LINE;
+    t.primary_bg = PINK;
+    t.primary_text = ON_PINK;
+    t.tab_strip = NIGHT;
+    t.row_selected = SEL_BG;
+    t
+}
+
 /// Apply the host look when `on` (what `theme::apply` and `embedded::apply_embedded_visuals` call);
 /// `on == false` leaves the context untouched.
 pub fn apply_if(ctx: &egui::Context, on: bool) {
     if !on {
         return;
     }
+    let t = applebox_tokens(crate::theme::Tokens::get(ctx));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("photocraft-theme"), t));
     ctx.set_visuals(applebox_visuals());
     ctx.global_style_mut(|s| applebox_spacing(&mut s.spacing));
 }
@@ -125,6 +160,30 @@ mod tests {
     }
 
     #[test]
+    fn tokens_use_cis_values_and_stay_readable() {
+        use cis::*;
+        let base = crate::theme::Tokens::for_kind(crate::theme::ThemeKind::Pro);
+        let t = applebox_tokens(base);
+        assert_eq!((t.card, t.chrome, t.accent, t.text, t.row_selected), (PANEL, NIGHT, PINK, INK, SEL_BG));
+        assert_eq!((t.pro, t.bevel, t.radius), (base.pro, base.bevel, base.radius));
+        assert_eq!((t.warning, t.danger), (base.warning, base.danger));
+        for (fg, bg, what) in [
+            (t.text, t.card, "text on card"),
+            (t.text, t.chrome, "text on chrome"),
+            (t.text, t.pressed, "text on pressed"),
+            (t.text, t.row_selected, "text on selected row"),
+            (t.text, t.field, "text in fields"),
+            (t.text_dim, t.card, "dim text on card"),
+            (t.accent_text, t.card, "accent text on card"),
+            (t.accent_text, t.row_selected, "accent text on selected row"),
+            (t.primary_text, t.primary_bg, "primary button text"),
+        ] {
+            let c = contrast(fg, bg);
+            assert!(c >= 4.5, "{what}: {c:.2}");
+        }
+    }
+
+    #[test]
     fn apply_if_switches_the_context() {
         let ctx = egui::Context::default();
         crate::theme::apply(&ctx, crate::theme::ThemeKind::Pro);
@@ -137,5 +196,7 @@ mod tests {
         assert_eq!(s.visuals.panel_fill, cis::PANEL);
         assert_eq!(s.spacing.item_spacing, egui::vec2(8.0, 6.0));
         assert_ne!(before, cis::PINK, "the upstream theme does not use the host accent");
+        let t = crate::theme::Tokens::get(&ctx);
+        assert_eq!((t.card, t.accent), (cis::PANEL, cis::PINK), "panels paint from the tokens");
     }
 }
