@@ -176,51 +176,73 @@ fn hex(c: &Value) -> Value {
     json!(format!("#{:02x}{:02x}{:02x}", q(0), q(1), q(2)))
 }
 
-fn flat_layers(v: &Value, depth: u32, out: &mut Vec<Value>) {
+/// Engine names (`"MagicWand"`, `"Pixel"`) as the host's camelCase (`"magicWand"`, `"pixel"`); the
+/// same names `ui.set` accepts (`Tool::from_name` ignores case).
+fn camel(v: &Value) -> Value {
+    match v.as_str() {
+        Some(s) => {
+            let mut c = s.chars();
+            json!(c.next().map(|f| f.to_lowercase().chain(c).collect::<String>()).unwrap_or_default())
+        }
+        None => v.clone(),
+    }
+}
+
+fn flat_layers(v: &Value, depth: u32, thumbs: &std::collections::HashMap<u64, String>, out: &mut Vec<Value>) {
     for l in v.as_array().into_iter().flatten() {
         out.push(json!({
-            "id": l["id"], "name": l["name"], "kind": l["kind"], "visible": l["visible"], "opacity": l["opacity"],
+            "id": l["id"], "name": l["name"], "kind": camel(&l["kind"]), "visible": l["visible"], "opacity": l["opacity"],
             "blend": l["blend"], "hasMask": l["hasMask"], "selected": l["selected"], "depth": depth,
             "adjustment": l.get("adjustment").cloned().unwrap_or(Value::Null),
             "text": l.get("text").cloned().unwrap_or(Value::Null),
+            "thumbRev": l["id"].as_u64().and_then(|id| thumbs.get(&id)).map_or(Value::Null, |r| json!(r)),
         }));
         if let Some(c) = l.get("children") {
-            flat_layers(c, depth + 1, out);
+            flat_layers(c, depth + 1, thumbs, out);
         }
     }
 }
 
 /// What `control::inspect` doesn't carry.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct StateExtra {
     pub selection_mode: u8,
     pub transforming: bool,
+    /// Painting goes to the active layer's mask (`ui.set maskTarget`).
+    pub mask_target: bool,
+    /// Layer id → pixel fingerprint (the `rev` of `ab.layer.thumbs`); layers without pixels absent.
+    pub thumb_revs: std::collections::HashMap<u64, String>,
 }
 
 impl StateExtra {
     pub fn of(app: &PhotocraftApp) -> Self {
-        Self { selection_mode: app.ui.selection_mode, transforming: app.ui.transform.is_some() }
+        let thumb_revs = app
+            .session
+            .active()
+            .map(|st| st.doc.walk().into_iter().filter_map(|(_, _, l)| Some((l.id.0, crate::surface_fingerprint(l.surface()?).to_string()))).collect())
+            .unwrap_or_default();
+        Self { selection_mode: app.ui.selection_mode, transforming: app.ui.transform.is_some(), mask_target: app.ui.mask_target, thumb_revs }
     }
 }
 
 /// The digest the host mirrors, from `control::inspect` plus [`StateExtra`]. Pure: tests feed a
-/// sample. `seq` is added by [`Digest`].
-pub fn state_from(inspect: &Value, extra: StateExtra) -> Value {
+/// sample. `seq` is added by [`Digest`]. Tool and layer kind names are camelCase.
+pub fn state_from(inspect: &Value, extra: &StateExtra) -> Value {
     let d = &inspect["document"];
     let mut layers = Vec::new();
-    flat_layers(&d["layers"], 0, &mut layers);
+    flat_layers(&d["layers"], 0, &extra.thumb_revs, &mut layers);
     let dialog = inspect["dialogs"].as_array().and_then(|a| a.last()).cloned().unwrap_or(Value::Null);
     json!({
         "type": "lc-pc-state",
         "rev": d["revision"],
-        "tool": inspect["tool"],
+        "tool": camel(&inspect["tool"]),
         "selectionMode": extra.selection_mode,
         "wand": {"tolerance": inspect["toolOptions"]["tolerance"], "contiguous": inspect["toolOptions"]["contiguous"]},
         "brush": inspect["brush"],
         "fg": hex(&inspect["session"]["foreground"]),
         "doc": if d.is_null() { Value::Null } else { json!({
             "w": d["width"], "h": d["height"], "dirty": d["dirty"], "canUndo": d["canUndo"], "canRedo": d["canRedo"],
-            "hasSelection": d["hasSelection"], "selectionBounds": d["selectionBounds"],
+            "hasSelection": d["hasSelection"], "selectionBounds": d["selectionBounds"], "maskTarget": extra.mask_target,
         }) },
         "layers": layers,
         "active": d["activeLayer"],

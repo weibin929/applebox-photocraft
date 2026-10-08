@@ -200,7 +200,7 @@ fn pump_bridge(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     let now = js_sys::Date::now();
     if DIGEST.with(|d| d.borrow().due(now, replied)) {
-        let state = ab_bridge::state_from(&photocraft_ui_egui::control::inspect(app, ctx), ab_bridge::StateExtra::of(app));
+        let state = ab_bridge::state_from(&photocraft_ui_egui::control::inspect(app, ctx), &ab_bridge::StateExtra::of(app));
         if let Some(s) = DIGEST.with(|d| d.borrow_mut().next(state, now)) {
             emit(&s);
         }

@@ -155,21 +155,28 @@ fn state_digest_shape() {
                        {"id": 1, "name": "g", "kind": "Group", "visible": true, "opacity": 1.0, "blend": "Normal", "hasMask": false, "selected": false,
                         "children": [{"id": 4, "name": "c", "kind": "Pixel", "visible": false, "opacity": 0.5, "blend": "Multiply", "hasMask": true, "selected": false}]}]}
     });
-    let s = state_from(&inspect, StateExtra { selection_mode: 2, transforming: true });
+    let extra = StateExtra { selection_mode: 2, transforming: true, mask_target: true, thumb_revs: [(4, "77".to_string())].into() };
+    let s = state_from(&inspect, &extra);
     assert_eq!(s["type"], "lc-pc-state");
     assert_eq!(s["rev"], 9);
-    assert_eq!(s["tool"], "Brush");
+    assert_eq!(s["tool"], "brush", "camelCase, the names ui.set takes");
     assert_eq!(s["fg"], "#ff3d7f");
     assert_eq!(s["selectionMode"], 2);
     assert_eq!(s["transforming"], true);
     assert_eq!(s["wand"]["tolerance"], 32.0);
     assert_eq!(s["doc"]["canUndo"], true);
+    assert_eq!(s["doc"]["maskTarget"], true);
     assert_eq!(s["active"], 2);
     let ls = s["layers"].as_array().unwrap();
     assert_eq!(ls.len(), 3);
     assert_eq!((ls[2]["id"].as_u64(), ls[2]["depth"].as_u64(), ls[2]["blend"].as_str()), (Some(4), Some(1), Some("Multiply")));
+    assert_eq!([ls[0]["kind"].as_str(), ls[1]["kind"].as_str()], [Some("pixel"), Some("group")]);
+    assert_eq!((ls[2]["thumbRev"].as_str(), ls[0]["thumbRev"].is_null()), (Some("77"), true));
+    let wand = state_from(&json!({"tool": "MagicWand", "document": null}), &StateExtra::default());
+    assert_eq!(wand["tool"], "magicWand");
+    assert_eq!(Tool::from_name("magicWand"), Some(Tool::MagicWand), "round-trips through ui.set's parser");
     assert!(s.get("seq").is_none(), "seq belongs to Digest");
-    let empty = state_from(&json!({"tool": "Move", "document": null}), StateExtra::default());
+    let empty = state_from(&json!({"tool": "Move", "document": null}), &StateExtra::default());
     assert!(empty["doc"].is_null());
     assert_eq!(empty["layers"], json!([]));
 }
@@ -342,11 +349,39 @@ fn undo_redo_deselect_brush_colors() {
     exec(&mut app, &ctx, "tools.setBrush", json!({"size": 24, "hardness": 0.5, "opacity": 0.8, "flow": 0.7}));
     assert_eq!(app.session.tools.brush.hardness, 0.5);
     exec(&mut app, &ctx, "tools.setColors", json!({"foreground": "#ff3d7f"}));
-    let s = state_from(&inspect(&app, &ctx), StateExtra::of(&app));
+    let s = state_from(&inspect(&app, &ctx), &StateExtra::of(&app));
     assert_eq!(s["fg"], "#ff3d7f");
     host(&mut app, &ctx, "ui.set", json!({"tool": "magicWand", "selectionMode": 2, "brushSize": 30.0}));
-    let s = state_from(&inspect(&app, &ctx), StateExtra::of(&app));
-    assert_eq!((s["tool"].as_str(), s["selectionMode"].as_u64()), (Some("MagicWand"), Some(2)));
+    let s = state_from(&inspect(&app, &ctx), &StateExtra::of(&app));
+    assert_eq!((s["tool"].as_str(), s["selectionMode"].as_u64()), (Some("magicWand"), Some(2)));
+    assert_eq!(s["doc"]["maskTarget"], false);
+    exec(&mut app, &ctx, "layer.layerMask.revealAll", json!({"layer": p}));
+    host(&mut app, &ctx, "ui.set", json!({"maskTarget": true}));
+    let m = state_from(&inspect(&app, &ctx), &StateExtra::of(&app));
+    assert_eq!(m["doc"]["maskTarget"], true, "switching where the brush paints changes the digest");
+    let mut d = Digest::default();
+    assert!(d.next(s, 0.0).is_some() && d.next(m, 1.0).is_some());
+}
+
+#[test]
+fn thumb_rev_follows_each_layers_pixels() {
+    let (mut app, ctx, p) = app64();
+    let q = app.run("layer.new.layer", json!({"name": "q"})).unwrap()["layer"].as_u64().unwrap();
+    let revs = |app: &PhotocraftApp| {
+        let s = state_from(&inspect(app, &ctx), &StateExtra::of(app));
+        let get = |id: u64| s["layers"].as_array().unwrap().iter().find(|l| l["id"] == id).unwrap()["thumbRev"].clone();
+        (get(p), get(q))
+    };
+    let (p0, q0) = revs(&app);
+    assert!(p0.is_string() && q0.is_string());
+    assert_eq!(p0, layer_thumbs(&app, &json!({"ids": [p]})).unwrap()["thumbs"][0]["rev"], "same value as ab.layer.thumbs");
+    // Paint on q only.
+    app.run("layer.select", json!({"layer": q})).unwrap();
+    app.run("select.rect", json!({"x": 40, "y": 40, "width": 8, "height": 8})).unwrap();
+    app.run("edit.fill", json!({"color": "#00ff00"})).unwrap();
+    let (p1, q1) = revs(&app);
+    assert_eq!(p1, p0, "an untouched layer keeps its fingerprint");
+    assert_ne!(q1, q0, "the painted layer's fingerprint changes");
 }
 
 #[test]
@@ -357,7 +392,7 @@ fn tool_options_and_thumbs() {
     assert!(set_tool_options(&mut app, &json!({"wandTolerance": 999})).is_err());
     assert!(set_tool_options(&mut app, &json!({"wandContiguous": true, "feather": 2})).is_err());
     assert!(!app.ui.tool_options.contiguous, "a refused call changes nothing");
-    let s = state_from(&inspect(&app, &ctx), StateExtra::of(&app));
+    let s = state_from(&inspect(&app, &ctx), &StateExtra::of(&app));
     assert_eq!(s["wand"], json!({"tolerance": 12.0, "contiguous": false}));
 
     let adj = exec(&mut app, &ctx, "layer.newAdjustmentLayer.levels", json!({}))["layer"].as_u64().unwrap();
