@@ -8,8 +8,95 @@ use photocraft_engine::Session;
 use photocraft_ui_egui::theme::ThemeKind;
 use photocraft_ui_egui::{PhotocraftApp, Services};
 use wasm_bindgen::JsCast as _;
+use wasm_bindgen::prelude::wasm_bindgen;
 
 type Inbox = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+// ── Host bridge (Apple Box fork, AB_FORK.md) ────────────────────────────────────────────────────
+// The host page (same origin) talks to the editor through three exported functions instead of
+// drag-and-drop and browser downloads: `open_bytes` feeds the inbox, `set_host_writer` receives
+// every saved/exported file, `host_command` asks for a save or an export. `set_embedded` hides
+// the product name and community links (`photocraft_ui_egui::embedded`).
+thread_local! {
+    static HOST_WRITER: std::cell::RefCell<Option<js_sys::Function>> = const { std::cell::RefCell::new(None) };
+    static PENDING_CMDS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HOST_INBOX: std::cell::RefCell<Option<(Inbox, egui::Context)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Host → editor: open a file's bytes as if it had been dropped on the canvas.
+#[wasm_bindgen]
+pub fn open_bytes(name: String, bytes: Vec<u8>) {
+    HOST_INBOX.with(|h| {
+        if let Some((inbox, ctx)) = &*h.borrow() {
+            inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
+            ctx.request_repaint();
+        } else {
+            log::error!("open_bytes before the app started");
+        }
+    });
+}
+
+/// Editor → host: `cb(name, Uint8Array)` for every Save / Export instead of a browser download.
+#[wasm_bindgen]
+pub fn set_host_writer(cb: js_sys::Function) {
+    HOST_WRITER.with(|w| *w.borrow_mut() = Some(cb));
+}
+
+/// Host → editor: `"save_psd"` (File › Save As, <name>.psd) or `"export_png"` (Quick Export as PNG).
+/// Anything else is ignored. The result reaches the host writer.
+#[wasm_bindgen]
+pub fn host_command(cmd: String) {
+    if cmd == "save_psd" || cmd == "export_png" {
+        PENDING_CMDS.with(|c| c.borrow_mut().push(cmd));
+        HOST_INBOX.with(|h| {
+            if let Some((_, ctx)) = &*h.borrow() {
+                ctx.request_repaint();
+            }
+        });
+    } else {
+        log::warn!("host_command: unknown command {cmd:?}");
+    }
+}
+
+/// Host → editor: embedded mode on/off (product name, links and brand mark hidden).
+#[wasm_bindgen]
+pub fn set_embedded(on: bool) {
+    photocraft_ui_egui::embedded::set_on(on);
+}
+
+/// Hand `bytes` to the host writer; `false` when none is installed (the caller then downloads).
+fn host_write(path: &str, bytes: &[u8]) -> bool {
+    HOST_WRITER.with(|w| match &*w.borrow() {
+        Some(cb) => {
+            let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+            let data = js_sys::Uint8Array::from(bytes);
+            if let Err(e) = cb.call2(&wasm_bindgen::JsValue::NULL, &name.into(), &data.into()) {
+                log::error!("host writer failed: {e:?}");
+            }
+            true
+        }
+        None => false,
+    })
+}
+
+/// Run the host's pending commands (one frame, in order).
+fn run_host_commands(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let cmds: Vec<String> = PENDING_CMDS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    for cmd in cmds {
+        let r = match cmd.as_str() {
+            "save_psd" => {
+                let name = app.session.active().map(|d| d.doc.name.clone()).unwrap_or_else(|| "document".into());
+                let stem = name.rsplit_once('.').map_or(name.as_str(), |(a, _)| a).to_string();
+                photocraft_ui_egui::menus::invoke(app, ctx, "file.saveAs", serde_json::json!({ "path": format!("{stem}.psd") }))
+            }
+            "export_png" => photocraft_ui_egui::export_dialog::quick_export_png(app),
+            _ => Ok(serde_json::Value::Null),
+        };
+        if let Err(e) = r {
+            log::error!("host_command {cmd}: {e}");
+        }
+    }
+}
 
 /// Everything File › Open reads: PhotoCraft and Photoshop documents, flat images, and Photoshop
 /// brushes (.abr) and gradients (.grd), which go to the preset libraries.
@@ -47,6 +134,7 @@ pub fn start() {
                 Box::new(move |cc| {
                     PhotocraftApp::setup_context(&cc.egui_ctx, ThemeKind::Pro);
                     let inbox: Inbox = Arc::default();
+                    HOST_INBOX.with(|h| *h.borrow_mut() = Some((inbox.clone(), cc.egui_ctx.clone())));
                     let mut app = PhotocraftApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
                     listen_pen(&pen_target, app.stylus.feed.clone());
                     app.set_theme(&cc.egui_ctx, ThemeKind::Pro);
@@ -127,6 +215,7 @@ impl eframe::App for WebShell {
                 }
             });
         }
+        run_host_commands(&mut self.app, ctx);
         self.app.logic(ctx, frame);
     }
 
@@ -170,7 +259,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             let name = std::path::Path::new(suggested).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| suggested.to_string());
             Some(name)
         })),
-        write: Some(Box::new(|path: &str, bytes: &[u8]| download(path, bytes))),
+        write: Some(Box::new(|path: &str, bytes: &[u8]| if host_write(path, bytes) { Ok(()) } else { download(path, bytes) })),
         encode_png: Some(Box::new(|w, h, rgba| {
             let img = Image::from_u8(w, h, ChannelLayout::Rgba, rgba.to_vec()).map_err(|e| e.to_string())?;
             photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &EncodeOptions::default()).map_err(|e| e.to_string())

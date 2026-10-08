@@ -109,6 +109,9 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     if crate::discard_ui::intercept(app, id, &params) {
         return Ok(Value::Null);
     }
+    if crate::embedded::hidden(id) {
+        return Err(format!("`{id}` is not available in embedded mode"));
+    }
     invoke_unguarded(app, ctx, id, params)
 }
 
@@ -734,6 +737,7 @@ pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
             it.color = prefs.menus.colors.get(&it.id).cloned();
         }
     }
+    crate::embedded::filter_menu_for(crate::embedded::on(), &mut items);
     items
 }
 

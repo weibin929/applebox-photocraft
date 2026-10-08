@@ -54,7 +54,7 @@ pub fn wayland_file_drop_guidance(app: &mut PhotocraftApp) {
         app,
         tl!("Native file drag-and-drop is unavailable"),
         vec![
-            tl!("Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or run PhotoCraft under XWayland with `WAYLAND_DISPLAY= photocraft`.").into(),
+            crate::embedded::brand(tl!("Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or run PhotoCraft under XWayland with `WAYLAND_DISPLAY= photocraft`.")),
         ],
         false,
         Some(WAYLAND_FILE_DROP_DISMISSED),

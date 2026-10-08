@@ -52,6 +52,7 @@ pub mod doc_props_ui;
 pub mod dock;
 pub mod enable_rules;
 pub mod eraser_ui;
+pub mod embedded;
 pub mod export_dialog;
 pub mod file_open;
 pub mod file_ui;

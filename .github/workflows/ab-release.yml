@@ -1,0 +1,87 @@
+# Apple Box fork (AB_FORK.md): build the web (wasm) bundle with the host bridge and publish it.
+#
+# - push to `applebox`: build, check the bridge is exported, upload the bundle as a workflow artifact.
+# - tag `ab-v*` (from `applebox`): the same build, zipped with LICENSE files, brotli/gzip precompressed,
+#   SHA256SUMS, attached to a GitHub release.
+#
+# Only this repository's own code is built; nothing here talks to any other service.
+name: ab-release
+
+on:
+  push:
+    branches: [applebox]
+    tags: ['ab-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TRUNK_VERSION: 0.21.14
+
+jobs:
+  web:
+    name: Web bundle (wasm, host bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ab-web
+      - name: Install trunk
+        run: |
+          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.cargo/bin" trunk
+          trunk --version
+      - name: Embedded-mode tests (Rust)
+        run: cargo test -p photocraft-ui-egui embedded -- --nocapture
+      - name: Build (trunk, wasm-release profile, wasm-opt -Oz)
+        run: packaging/web/package.sh
+      - name: Check the host bridge is exported
+        run: |
+          set -euo pipefail
+          js=$(ls dist/web/photocraft-web-*.js | head -1)
+          for f in open_bytes set_host_writer host_command set_embedded; do
+            grep -q "$f" "$js" || { echo "missing export: $f" >&2; exit 1; }
+          done
+          grep -q 'data-initializer\|initializer' dist/web/index.html || echo "note: initializer wiring not visible in index.html"
+          ls -la dist/web
+      - name: Precompress and package
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq brotli zip >/dev/null
+          VER=$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)
+          TAG="${GITHUB_REF_NAME}"
+          NAME="applebox-photocraft-web-${VER}-${GITHUB_SHA::7}"
+          [[ "$TAG" == ab-v* ]] && NAME="applebox-photocraft-web-${TAG}"
+          mkdir -p out/"$NAME"
+          cp -R dist/web/. out/"$NAME"/
+          cp LICENSE-MIT LICENSE-APACHE NOTICE AB_FORK.md out/"$NAME"/
+          for f in out/"$NAME"/*.wasm out/"$NAME"/*.js; do
+            brotli -q 11 -k "$f"
+            gzip -9 -k "$f"
+          done
+          cat > out/"$NAME"/VERSION.json <<EOF
+          {"upstream_version":"$VER","fork_sha":"$GITHUB_SHA","tag":"$TAG","built":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          (cd out && zip -qr9 "$NAME.zip" "$NAME")
+          (cd out && sha256sum "$NAME.zip" > SHA256SUMS && cat SHA256SUMS)
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            out/*.zip
+            out/SHA256SUMS
+          if-no-files-found: error
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/ab-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.zip out/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Apple Box web bundle (host bridge + embedded mode), upstream PhotoCraft $(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml). See AB_FORK.md. Verify with SHA256SUMS."
