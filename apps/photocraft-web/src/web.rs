@@ -62,6 +62,12 @@ pub fn host_command(cmd: String) {
 #[wasm_bindgen]
 pub fn set_embedded(on: bool) {
     photocraft_ui_egui::embedded::set_on(on);
+    HOST_INBOX.with(|h| {
+        if let Some((_, ctx)) = &*h.borrow() {
+            photocraft_ui_egui::embedded::apply_embedded_visuals(ctx);
+            ctx.request_repaint();
+        }
+    });
 }
 
 /// Hand `bytes` to the host writer; `false` when none is installed (the caller then downloads).

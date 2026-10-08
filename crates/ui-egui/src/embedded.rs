@@ -58,6 +58,18 @@ pub fn hidden(id: &str) -> bool {
     hidden_for(on(), id)
 }
 
+/// Hook for the host's colour scheme (kept apart from the brand hiding above): called once when
+/// embedded mode turns on, after the app's own theme is set up. For now it only sets the selection
+/// accent; the host's full palette lands here later.
+pub fn apply_embedded_visuals(ctx: &egui::Context) {
+    if !on() {
+        return;
+    }
+    let mut visuals = ctx.style().visuals.clone();
+    visuals.selection.bg_fill = egui::Color32::from_rgb(0xFF, 0x3D, 0x7F);
+    ctx.set_visuals(visuals);
+}
+
 /// Drop the hidden commands from a menu list (`menus::menu_items`).
 pub fn filter_menu_for(on: bool, items: &mut Vec<crate::menus::MenuItem>) {
     if on {
