@@ -176,11 +176,13 @@ fn hex(c: &Value) -> Value {
     json!(format!("#{:02x}{:02x}{:02x}", q(0), q(1), q(2)))
 }
 
-/// Engine names (`"MagicWand"`, `"Pixel"`) as the host's camelCase (`"magicWand"`, `"pixel"`); the
-/// same names `ui.set` accepts (`Tool::from_name` ignores case).
+/// Engine names (`"MagicWand"`, `"Pixel"`, `"Smart Object"`) as the host's camelCase
+/// (`"magicWand"`, `"pixel"`, `"smartObject"`); the same names `ui.set` accepts
+/// (`Tool::from_name` ignores case and spaces).
 fn camel(v: &Value) -> Value {
     match v.as_str() {
         Some(s) => {
+            let s: String = s.split(' ').collect();
             let mut c = s.chars();
             json!(c.next().map(|f| f.to_lowercase().chain(c).collect::<String>()).unwrap_or_default())
         }
@@ -188,40 +190,94 @@ fn camel(v: &Value) -> Value {
     }
 }
 
-fn flat_layers(v: &Value, depth: u32, thumbs: &std::collections::HashMap<u64, String>, out: &mut Vec<Value>) {
+/// An adjustment as the host edits it: `{kind, …}` with exactly the keys and scale
+/// `layer.setAdjustment` takes (`kind` as in `layer.newAdjustmentLayer.<kind>`), so a value read
+/// here and sent back changes nothing. Upstream's `to_params` is the inverse of the parser.
+pub fn adjustment_params(a: &photocraft_doc::Adjustment) -> Value {
+    let mut v = photocraft_engine::adjust_params::to_params(a);
+    if !v.is_object() {
+        v = json!({});
+    }
+    v["kind"] = json!(photocraft_engine::commands::adjustment_kind(a));
+    v
+}
+
+fn flat_layers(v: &Value, depth: u32, extra: &StateExtra, out: &mut Vec<Value>) {
     for l in v.as_array().into_iter().flatten() {
+        let id = l["id"].as_u64();
         out.push(json!({
             "id": l["id"], "name": l["name"], "kind": camel(&l["kind"]), "visible": l["visible"], "opacity": l["opacity"],
             "blend": l["blend"], "hasMask": l["hasMask"], "selected": l["selected"], "depth": depth,
-            "adjustment": l.get("adjustment").cloned().unwrap_or(Value::Null),
+            "adjustment": id.and_then(|id| extra.adjustments.get(&id)).cloned().unwrap_or(Value::Null),
             "text": l.get("text").cloned().unwrap_or(Value::Null),
-            "thumbRev": l["id"].as_u64().and_then(|id| thumbs.get(&id)).map_or(Value::Null, |r| json!(r)),
+            "thumbRev": id.and_then(|id| extra.thumb_revs.get(&id)).map_or(Value::Null, |r| json!(r)),
         }));
         if let Some(c) = l.get("children") {
-            flat_layers(c, depth + 1, thumbs, out);
+            flat_layers(c, depth + 1, extra, out);
         }
     }
 }
 
-/// What `control::inspect` doesn't carry.
+/// What `control::inspect` doesn't carry (or carries in upstream's internal form).
 #[derive(Clone, Debug, Default)]
 pub struct StateExtra {
     pub selection_mode: u8,
     pub transforming: bool,
     /// Painting goes to the active layer's mask (`ui.set maskTarget`).
     pub mask_target: bool,
+    /// The document has changes since it was opened or saved (`None` without a document).
+    pub dirty: Option<bool>,
     /// Layer id → pixel fingerprint (the `rev` of `ab.layer.thumbs`); layers without pixels absent.
     pub thumb_revs: std::collections::HashMap<u64, String>,
+    /// Layer id → [`adjustment_params`] for adjustment layers.
+    pub adjustments: std::collections::HashMap<u64, Value>,
 }
 
 impl StateExtra {
     pub fn of(app: &PhotocraftApp) -> Self {
-        let thumb_revs = app
-            .session
-            .active()
-            .map(|st| st.doc.walk().into_iter().filter_map(|(_, _, l)| Some((l.id.0, crate::surface_fingerprint(l.surface()?).to_string()))).collect())
-            .unwrap_or_default();
-        Self { selection_mode: app.ui.selection_mode, transforming: app.ui.transform.is_some(), mask_target: app.ui.mask_target, thumb_revs }
+        let mut extra =
+            Self { selection_mode: app.ui.selection_mode, transforming: app.ui.transform.is_some(), mask_target: app.ui.mask_target, ..Self::default() };
+        if let Some(st) = app.session.active() {
+            extra.dirty = Some(st.is_dirty());
+            for (_, _, l) in st.doc.walk() {
+                if let Some(s) = l.surface() {
+                    extra.thumb_revs.insert(l.id.0, crate::surface_fingerprint(s).to_string());
+                }
+                if let photocraft_doc::LayerContent::Adjustment(a) = &l.content {
+                    extra.adjustments.insert(l.id.0, adjustment_params(a));
+                }
+            }
+        }
+        extra
+    }
+}
+
+/// `lc-pc-ready` goes out once, when the app runs (its control channel takes requests) and the
+/// host listens for events, whichever comes last. Before that a `lc-pc-call` would be refused.
+#[derive(Debug, Default)]
+pub struct ReadyGate {
+    running: bool,
+    listening: bool,
+    sent: bool,
+}
+
+impl ReadyGate {
+    /// The app exists and its control channel is installed. True: send `ready` now.
+    pub fn app_running(&mut self) -> bool {
+        self.running = true;
+        self.fire()
+    }
+
+    /// The host installed its events callback. True: send `ready` now.
+    pub fn host_listening(&mut self) -> bool {
+        self.listening = true;
+        self.fire()
+    }
+
+    fn fire(&mut self) -> bool {
+        let now = self.running && self.listening && !self.sent;
+        self.sent |= now;
+        now
     }
 }
 
@@ -230,7 +286,7 @@ impl StateExtra {
 pub fn state_from(inspect: &Value, extra: &StateExtra) -> Value {
     let d = &inspect["document"];
     let mut layers = Vec::new();
-    flat_layers(&d["layers"], 0, &extra.thumb_revs, &mut layers);
+    flat_layers(&d["layers"], 0, extra, &mut layers);
     let dialog = inspect["dialogs"].as_array().and_then(|a| a.last()).cloned().unwrap_or(Value::Null);
     json!({
         "type": "lc-pc-state",
@@ -241,7 +297,7 @@ pub fn state_from(inspect: &Value, extra: &StateExtra) -> Value {
         "brush": inspect["brush"],
         "fg": hex(&inspect["session"]["foreground"]),
         "doc": if d.is_null() { Value::Null } else { json!({
-            "w": d["width"], "h": d["height"], "dirty": d["dirty"], "canUndo": d["canUndo"], "canRedo": d["canRedo"],
+            "w": d["width"], "h": d["height"], "dirty": extra.dirty, "canUndo": d["canUndo"], "canRedo": d["canRedo"],
             "hasSelection": d["hasSelection"], "selectionBounds": d["selectionBounds"], "maskTarget": extra.mask_target,
         }) },
         "layers": layers,

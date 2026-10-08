@@ -32,6 +32,7 @@ thread_local! {
     static AB_CALLS: std::cell::RefCell<Vec<(u32, String, serde_json::Value)>> = const { std::cell::RefCell::new(Vec::new()) };
     static HOST_EVENTS: std::cell::RefCell<Option<js_sys::Function>> = const { std::cell::RefCell::new(None) };
     static DIGEST: std::cell::RefCell<ab_bridge::Digest> = std::cell::RefCell::new(ab_bridge::Digest::default());
+    static READY: std::cell::RefCell<ab_bridge::ReadyGate> = std::cell::RefCell::new(ab_bridge::ReadyGate::default());
 }
 
 /// Host → editor: open a file's bytes as if it had been dropped on the canvas.
@@ -146,6 +147,9 @@ pub fn ab_add_font(name: String, bytes: Vec<u8>) {
 pub fn set_host_events(cb: js_sys::Function) {
     HOST_EVENTS.with(|e| *e.borrow_mut() = Some(cb));
     DIGEST.with(|d| d.borrow_mut().resend()); // a new listener gets the current state (seq keeps counting)
+    if READY.with(|r| r.borrow_mut().host_listening()) {
+        emit(&serde_json::json!({"type": "ready"}));
+    }
     HOST_INBOX.with(|h| {
         if let Some((_, ctx)) = &*h.borrow() {
             ctx.request_repaint();
@@ -286,6 +290,10 @@ pub fn start() {
                     let (control_tx, control_rx) = std::sync::mpsc::channel();
                     CONTROL_TX.with(|t| *t.borrow_mut() = Some(control_tx));
                     let mut app = PhotocraftApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone())).with_control(control_rx);
+                    // The control channel takes requests from here on: tell the host (once it listens).
+                    if READY.with(|r| r.borrow_mut().app_running()) {
+                        emit(&serde_json::json!({"type": "ready"}));
+                    }
                     listen_pen(&pen_target, app.stylus.feed.clone());
                     app.set_theme(&cc.egui_ctx, ThemeKind::Pro);
                     if let Some(rs) = cc.wgpu_render_state.clone()

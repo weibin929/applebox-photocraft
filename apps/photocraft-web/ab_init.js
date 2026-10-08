@@ -24,14 +24,7 @@ export default function initializer() {
       post({ type: 'lc-pc-file', name, kind, bytes: buf }, [buf]);
     });
     const v2 = typeof b.host_control === 'function' && typeof b.set_host_events === 'function';
-    if (v2) {
-      b.set_host_events((s) => {
-        let m;
-        try { m = JSON.parse(s); } catch (e) { return; }
-        if (m.type === 'reply') post({ type: 'lc-pc-reply', id: m.id, ok: !!m.ok, result: m.result, error: m.error });
-        else if (m.type === 'lc-pc-state') post(m);
-      });
-    }
+    const ready = () => post({ type: 'lc-pc-ready', backend: navigator.gpu ? 'webgpu' : 'webgl2', bridge: v2 ? 2 : 1 });
     addEventListener('message', (e) => {
       if (e.origin !== ORIGIN || e.source !== window.parent) return;
       const m = e.data || {};
@@ -40,7 +33,19 @@ export default function initializer() {
       else if (m.type === 'lc-pc-call' && v2) b.host_control(m.id >>> 0, String(m.method || ''), JSON.stringify(m.params || {}));
       else if (m.type === 'lc-pc-font' && m.bytes && typeof b.ab_add_font === 'function') b.ab_add_font(String(m.name || 'font'), new Uint8Array(m.bytes));
     });
-    post({ type: 'lc-pc-ready', backend: navigator.gpu ? 'webgpu' : 'webgl2', bridge: v2 ? 2 : 1 });
+    if (v2) {
+      // Bridge v2: the editor says `ready` once its control channel takes requests (the bindings,
+      // and so this initializer, exist a moment before the app does).
+      b.set_host_events((s) => {
+        let m;
+        try { m = JSON.parse(s); } catch (e) { return; }
+        if (m.type === 'reply') post({ type: 'lc-pc-reply', id: m.id, ok: !!m.ok, result: m.result, error: m.error });
+        else if (m.type === 'lc-pc-state') post(m);
+        else if (m.type === 'ready') ready();
+      });
+    } else {
+      ready();
+    }
   }
 
   return {

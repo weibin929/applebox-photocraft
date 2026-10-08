@@ -161,7 +161,14 @@ fn state_digest_shape() {
                        {"id": 1, "name": "g", "kind": "Group", "visible": true, "opacity": 1.0, "blend": "Normal", "hasMask": false, "selected": false,
                         "children": [{"id": 4, "name": "c", "kind": "Pixel", "visible": false, "opacity": 0.5, "blend": "Multiply", "hasMask": true, "selected": false}]}]}
     });
-    let extra = StateExtra { selection_mode: 2, transforming: true, mask_target: true, thumb_revs: [(4, "77".to_string())].into() };
+    let extra = StateExtra {
+        selection_mode: 2,
+        transforming: true,
+        mask_target: true,
+        dirty: Some(true),
+        thumb_revs: [(4, "77".to_string())].into(),
+        adjustments: [(4, json!({"kind": "levels", "inBlack": 10.0}))].into(),
+    };
     let s = state_from(&inspect, &extra);
     assert_eq!(s["type"], "lc-pc-state");
     assert_eq!(s["rev"], 9);
@@ -172,6 +179,8 @@ fn state_digest_shape() {
     assert_eq!(s["wand"]["tolerance"], 32.0);
     assert_eq!(s["doc"]["canUndo"], true);
     assert_eq!(s["doc"]["maskTarget"], true);
+    assert_eq!(s["doc"]["dirty"], true);
+    assert_eq!(s["layers"][2]["adjustment"]["kind"], "levels");
     assert_eq!(s["active"], 2);
     let ls = s["layers"].as_array().unwrap();
     assert_eq!(ls.len(), 3);
@@ -306,6 +315,81 @@ fn mask_add_invert_delete() {
     assert!(layer(&app, p).mask.is_none());
     exec(&mut app, &ctx, "layer.layerMask.revealAll", json!({"layer": p}));
     assert!(mask_at(&app, p, 40, 40) > 0.9);
+}
+
+fn state_layer(app: &PhotocraftApp, ctx: &egui::Context, id: u64) -> Value {
+    let s = state_from(&inspect(app, ctx), &StateExtra::of(app));
+    s["layers"].as_array().unwrap().iter().find(|l| l["id"] == id).unwrap().clone()
+}
+
+#[test]
+fn state_adjustment_is_flat_in_set_adjustment_terms_and_round_trips() {
+    let (mut app, ctx, _) = app64();
+    let hs = exec(&mut app, &ctx, "layer.newAdjustmentLayer.hueSaturation", json!({"hue": 30, "saturation": -20, "lightness": 5}))["layer"].as_u64().unwrap();
+    let bc = exec(&mut app, &ctx, "layer.newAdjustmentLayer.brightnessContrast", json!({"brightness": 12, "contrast": 25}))["layer"].as_u64().unwrap();
+    let lv =
+        exec(&mut app, &ctx, "layer.newAdjustmentLayer.levels", json!({"inBlack": 10, "gamma": 1.4, "inWhite": 240, "outBlack": 5, "outWhite": 250}))["layer"]
+            .as_u64()
+            .unwrap();
+
+    let a = state_layer(&app, &ctx, hs)["adjustment"].clone();
+    assert_eq!(
+        (a["kind"].as_str(), a["hue"].as_f64(), a["saturation"].as_f64(), a["lightness"].as_f64()),
+        (Some("hueSaturation"), Some(30.0), Some(-20.0), Some(5.0)),
+        "{a}"
+    );
+    let a = state_layer(&app, &ctx, bc)["adjustment"].clone();
+    assert_eq!((a["kind"].as_str(), a["brightness"].as_f64(), a["contrast"].as_f64()), (Some("brightnessContrast"), Some(12.0), Some(25.0)), "{a}");
+    let a = state_layer(&app, &ctx, lv)["adjustment"].clone();
+    // Same 0..255 scale as the parameters, not upstream's internal 0..1.
+    assert_eq!(
+        (a["kind"].as_str(), a["inBlack"].as_f64(), a["inWhite"].as_f64(), a["outBlack"].as_f64(), a["outWhite"].as_f64()),
+        (Some("levels"), Some(10.0), Some(240.0), Some(5.0), Some(250.0)),
+        "{a}"
+    );
+    assert!((a["gamma"].as_f64().unwrap() - 1.4).abs() < 1e-6, "{a}");
+    let pixel = state_layer(&app, &ctx, *order(&app).last().unwrap());
+    assert!(pixel["adjustment"].is_null());
+
+    // Contract: what the state says, sent back to layer.setAdjustment, changes nothing.
+    for id in [hs, bc, lv] {
+        let before = layer(&app, id).content.clone();
+        let mut p = state_layer(&app, &ctx, id)["adjustment"].clone();
+        p.as_object_mut().unwrap().remove("kind");
+        p["layer"] = json!(id);
+        exec(&mut app, &ctx, "layer.setAdjustment", p);
+        assert_eq!(layer(&app, id).content, before, "layer {id}: state → setAdjustment must be a no-op");
+    }
+    // And an edit through setAdjustment reads back in the same terms.
+    exec(&mut app, &ctx, "layer.setAdjustment", json!({"layer": hs, "hue": -45}));
+    assert_eq!(state_layer(&app, &ctx, hs)["adjustment"]["hue"], -45.0);
+}
+
+#[test]
+fn state_dirty_is_the_documents() {
+    let (mut app, ctx, p) = app64();
+    let dirty = |app: &PhotocraftApp| state_from(&inspect(app, &ctx), &StateExtra::of(app))["doc"]["dirty"].clone();
+    assert_eq!(dirty(&app), json!(app.session.active().unwrap().is_dirty()));
+    exec(&mut app, &ctx, "layer.setProps", json!({"layer": p, "opacity": 0.5}));
+    assert_eq!(dirty(&app), true);
+    app.session.active_mut().unwrap().saved_revision = app.session.active().unwrap().revision; // what a save does
+    assert_eq!(dirty(&app), false);
+    exec(&mut app, &ctx, "layer.setProps", json!({"layer": p, "opacity": 0.75}));
+    assert_eq!(dirty(&app), true);
+    let none = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    assert!(state_from(&inspect(&none, &ctx), &StateExtra::of(&none))["doc"].is_null());
+}
+
+#[test]
+fn ready_goes_out_once_when_the_app_runs_and_the_host_listens() {
+    let mut g = ReadyGate::default();
+    assert!(!g.host_listening(), "the host listens before the app exists: not yet");
+    assert!(g.app_running(), "the app starts: now");
+    assert!(!g.host_listening() && !g.app_running(), "only once");
+    let mut g = ReadyGate::default();
+    assert!(!g.app_running());
+    assert!(g.host_listening());
+    assert!(!g.host_listening());
 }
 
 #[test]
