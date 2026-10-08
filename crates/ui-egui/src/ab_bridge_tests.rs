@@ -380,6 +380,73 @@ fn state_dirty_is_the_documents() {
     assert!(state_from(&inspect(&none, &ctx), &StateExtra::of(&none))["doc"].is_null());
 }
 
+/// State → `layer.setAdjustment` round trip on an adjustment layer built with `params`.
+fn round_trips(mode: &str, kind: &str, params: Value) {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 32, "height": 32, "mode": mode})).unwrap();
+    let id = exec(&mut app, &ctx, &format!("layer.newAdjustmentLayer.{kind}"), json!({})).as_object().and_then(|o| o["layer"].as_u64()).unwrap();
+    let mut set = params.clone();
+    set["layer"] = json!(id);
+    exec(&mut app, &ctx, "layer.setAdjustment", set);
+    let before = layer(&app, id).content.clone();
+    let read = state_layer(&app, &ctx, id)["adjustment"].clone();
+    assert_eq!(read["kind"], kind);
+    let mut back = read.clone();
+    back.as_object_mut().unwrap().remove("kind");
+    back["layer"] = json!(id);
+    exec(&mut app, &ctx, "layer.setAdjustment", back);
+    assert_eq!(layer(&app, id).content, before, "{mode} {kind}: state → setAdjustment moved the layer; read {read}");
+}
+
+#[test]
+fn adjustment_round_trip_covers_every_field_and_high_precision_levels() {
+    let ch = |b: f64, g: f64, w: f64, ob: f64, ow: f64| json!({"inBlack": b, "gamma": g, "inWhite": w, "outBlack": ob, "outWhite": ow});
+    // Levels: high-precision points and gamma, the composite and every channel, in each tone space.
+    round_trips(
+        "rgb",
+        "levels",
+        json!({"inBlack": 10.123, "gamma": 1.23456, "inWhite": 240.777, "outBlack": 3.3, "outWhite": 251.9,
+               "red": ch(1.5, 0.87654, 250.25, 0.1, 254.9), "green": ch(7.77, 2.34567, 199.99, 12.0, 230.5), "blue": ch(33.3, 0.5, 222.2, 4.4, 244.4)}),
+    );
+    round_trips(
+        "cmyk",
+        "levels",
+        json!({"inBlack": 5.55, "gamma": 1.11111, "inWhite": 245.5,
+               "cyan": ch(2.2, 0.9, 250.0, 1.0, 254.0), "magenta": ch(3.3, 1.7, 240.0, 0.0, 255.0),
+               "yellow": ch(4.4, 1.3, 230.0, 2.0, 253.0), "black": ch(9.876, 0.66666, 201.234, 6.5, 249.75)}),
+    );
+    round_trips(
+        "lab",
+        "levels",
+        json!({"lightness": ch(11.1, 1.4321, 233.3, 2.5, 250.5), "a": ch(20.2, 0.7777, 210.1, 8.0, 247.0), "b": ch(5.05, 1.9999, 249.9, 0.5, 254.5)}),
+    );
+    // Brightness/Contrast, legacy on.
+    round_trips("rgb", "brightnessContrast", json!({"brightness": -37.5, "contrast": -80.25, "legacy": true}));
+    // Hue/Saturation: colorize, and (separately) all six ranges off their defaults.
+    round_trips("rgb", "hueSaturation", json!({"colorize": true, "hue": 212.5, "saturation": 43.25, "lightness": -12.75}));
+    let range = |h: f64, s: f64, l: f64, b: [f64; 4]| json!({"hue": h, "saturation": s, "lightness": l, "range": b});
+    round_trips(
+        "rgb",
+        "hueSaturation",
+        json!({"hue": -33.3, "saturation": 22.2, "lightness": 11.1,
+               "reds": range(10.0, -20.0, 5.0, [330.0, 350.0, 10.0, 30.0]), "yellows": range(-15.5, 30.0, -5.0, [20.0, 45.0, 75.0, 100.0]),
+               "greens": range(25.0, 10.0, 0.0, [80.0, 105.0, 135.0, 160.0]), "cyans": range(-40.0, -10.0, 20.0, [140.0, 165.0, 195.0, 220.0]),
+               "blues": range(60.0, 50.0, -30.0, [200.0, 225.0, 255.0, 280.0]), "magentas": range(-90.0, -60.0, 40.0, [260.0, 285.0, 315.0, 340.0])}),
+    );
+}
+
+#[test]
+fn to_255_parses_back_to_the_same_f32() {
+    // Every 0..1 value the parser can store from a 0.01-step 0..255 parameter, plus odd ones.
+    let mut xs: Vec<f32> = (0..=25500).map(|i| (i as f32 / 100.0) / 255.0).collect();
+    xs.extend([1e-7, 0.1, 1.0 / 3.0, 0.987_654_3, 0.5 + f32::EPSILON]);
+    for x in xs {
+        let v = to_255(x);
+        assert_eq!(((v as f64) as f32) / 255.0, x, "x {x} → {v}");
+    }
+}
+
 #[test]
 fn ready_goes_out_once_when_the_app_runs_and_the_host_listens() {
     let mut g = ReadyGate::default();

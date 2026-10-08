@@ -194,12 +194,52 @@ fn camel(v: &Value) -> Value {
 /// `layer.setAdjustment` takes (`kind` as in `layer.newAdjustmentLayer.<kind>`), so a value read
 /// here and sent back changes nothing. Upstream's `to_params` is the inverse of the parser.
 pub fn adjustment_params(a: &photocraft_doc::Adjustment) -> Value {
+    use photocraft_doc::Adjustment;
+    use photocraft_doc::adjust::ToneSpace;
     let mut v = photocraft_engine::adjust_params::to_params(a);
     if !v.is_object() {
         v = json!({});
     }
+    // Upstream rounds Levels for display (points to 0.01, gamma to 0.001); the host needs the
+    // exact values, or sending them back would move the layer.
+    if let Adjustment::Levels { master, per_channel, space, black } = a {
+        let top = if *space == ToneSpace::Lab { &per_channel[0] } else { master };
+        if let (Some(o), Value::Object(t)) = (v.as_object_mut(), levels_exact(top)) {
+            o.extend(t);
+        }
+        let keys = photocraft_engine::adjust_params::channel_keys(*space);
+        for (key, c) in keys.iter().zip([&per_channel[0], &per_channel[1], &per_channel[2], black]) {
+            v[*key] = levels_exact(c);
+        }
+    }
     v["kind"] = json!(photocraft_engine::commands::adjustment_kind(a));
     v
+}
+
+/// A Levels channel in `layer.setAdjustment` terms (points 0..255), exactly: parsing it back
+/// gives the same `f32`s.
+fn levels_exact(c: &photocraft_doc::adjust::LevelsChannel) -> Value {
+    json!({"inBlack": to_255(c.in_black), "gamma": c.gamma, "inWhite": to_255(c.in_white), "outBlack": to_255(c.out_black), "outWhite": to_255(c.out_white)})
+}
+
+/// The 0..255 parameter for a stored 0..1 value `x`: the upstream parser computes `(v as f32) / 255.0`,
+/// and `x * 255.0` doesn't always come back to `x` in `f32`, so the neighbours within a few ulps
+/// are tried and the first that does is used (`x * 255.0` itself when none does).
+pub fn to_255(x: f32) -> f32 {
+    let guess = x * 255.0;
+    if !guess.is_finite() || guess <= 0.0 {
+        return guess;
+    }
+    let bits = guess.to_bits();
+    for k in 0..=8u32 {
+        for cand in [bits.saturating_add(k), bits.saturating_sub(k)] {
+            let c = f32::from_bits(cand);
+            if c / 255.0 == x {
+                return c;
+            }
+        }
+    }
+    guess
 }
 
 fn flat_layers(v: &Value, depth: u32, extra: &StateExtra, out: &mut Vec<Value>) {
