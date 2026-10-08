@@ -357,6 +357,9 @@ impl eframe::App for WebShell {
     // clipboard events back into key presses; without forwarding it, `ui.key` never arrives.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         eframe::App::raw_input_hook(&mut self.app, ctx, raw_input);
+        if photocraft_ui_egui::embedded::canvas_only() {
+            ab_bridge::filter_canvas_input(&mut self.app.ui.tool, &mut raw_input.events);
+        }
     }
 }
 

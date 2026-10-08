@@ -147,6 +147,26 @@ pub fn tool_for_key(key: egui::Key, m: egui::Modifiers, current: Tool) -> Option
     })
 }
 
+/// Embedded input filter (the web shell runs it after the app's `raw_input_hook`, so ⌘C/⌘X/⌘V
+/// arrive as key presses): keys outside [`key_allowed`] are dropped, tool letters switch `tool` to
+/// a first-batch tool ([`tool_for_key`]) and are dropped, and no text or IME input reaches the
+/// canvas (type is entered in the host's own field).
+pub fn filter_canvas_input(tool: &mut Tool, events: &mut Vec<egui::Event>) {
+    events.retain(|e| match e {
+        egui::Event::Key { key, pressed, repeat, modifiers, .. } => {
+            if let Some(t) = tool_for_key(*key, *modifiers, *tool) {
+                if *pressed && !*repeat {
+                    *tool = t;
+                }
+                return false;
+            }
+            key_allowed(*key, *modifiers)
+        }
+        egui::Event::Text(_) | egui::Event::Ime(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => false,
+        _ => true,
+    });
+}
+
 fn hex(c: &Value) -> Value {
     let Some(a) = c.as_array() else { return Value::Null };
     let q = |i: usize| (a.get(i).and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;

@@ -1047,8 +1047,9 @@ impl eframe::App for PhotocraftApp {
         }
         let t0 = gpu_canvas::now_ms();
         // View › Screen Mode › Full Screen Mode: only the image, on black (F or Esc returns).
-        let chrome = !self.ui.view.hides_chrome();
-        if !chrome && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        let canvas_only = embedded::canvas_only();
+        let chrome = !self.ui.view.hides_chrome() && !canvas_only;
+        if !chrome && !canvas_only && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = menus::invoke(self, &ctx, "view.screenMode.standard", serde_json::json!({}));
         }
         if chrome {
@@ -1067,28 +1068,36 @@ impl eframe::App for PhotocraftApp {
             panels::right_dock(self, ui);
         }
         let t = theme::Tokens::get(&ctx);
-        let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
+        let backdrop = if canvas_only {
+            applebox_theme::cis::NIGHT
+        } else if chrome {
+            prefs_ui::pasteboard_color(self).unwrap_or(t.canvas)
+        } else {
+            egui::Color32::BLACK
+        };
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
             canvas::document_area(self, ui);
         });
-        panels::properties_window(self, &ctx);
-        brush_panel::window(self, &ctx);
-        preset_panels::windows(self, &ctx);
-        type_panels_ui::windows(self, &ctx);
-        analysis_ui::windows(self, &ctx);
-        timeline_ui::windows(self, &ctx);
-        workspace_ui::windows(self, &ctx);
-        palette::show(self, &ctx);
-        dialogs::show(self, &ctx);
-        jobs_ui::dialog(self, &ctx);
-        discard_ui::show(self, &ctx);
-        tiff_options_ui::show(self, &ctx);
-        distort_ui::show(self, &ctx);
-        camera_raw_ui::show(self, &ctx);
-        wide_angle_ui::show(self, &ctx);
-        canvas::extra_windows(self, &ctx);
-        notices::show(self, &ctx);
-        gpu_status::show_fallback(self, &ctx);
+        if !canvas_only {
+            panels::properties_window(self, &ctx);
+            brush_panel::window(self, &ctx);
+            preset_panels::windows(self, &ctx);
+            type_panels_ui::windows(self, &ctx);
+            analysis_ui::windows(self, &ctx);
+            timeline_ui::windows(self, &ctx);
+            workspace_ui::windows(self, &ctx);
+            palette::show(self, &ctx);
+            dialogs::show(self, &ctx);
+            jobs_ui::dialog(self, &ctx);
+            discard_ui::show(self, &ctx);
+            tiff_options_ui::show(self, &ctx);
+            distort_ui::show(self, &ctx);
+            camera_raw_ui::show(self, &ctx);
+            wide_angle_ui::show(self, &ctx);
+            canvas::extra_windows(self, &ctx);
+            notices::show(self, &ctx);
+            gpu_status::show_fallback(self, &ctx);
+        }
         if self.custom_titlebar {
             titlebar::resize_zones(ui);
         }

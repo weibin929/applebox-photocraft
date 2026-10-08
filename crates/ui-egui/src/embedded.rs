@@ -14,9 +14,32 @@ pub fn set_on(on: bool) {
     ON.store(on, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    // Tests that run whole frames switch the mode for their own thread only (tests run in parallel).
+    static THIS_THREAD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test only: embedded mode on/off for the calling thread (`None` = the global flag).
+#[cfg(test)]
+pub(crate) fn set_on_for_this_thread(on: Option<bool>) {
+    THIS_THREAD.with(|t| t.set(on));
+}
+
 /// Whether embedded mode is on.
 pub fn on() -> bool {
+    #[cfg(test)]
+    if let Some(on) = THIS_THREAD.with(|t| t.get()) {
+        return on;
+    }
     ON.load(Ordering::Relaxed)
+}
+
+/// Embedded mode draws only the canvas: no title/options/status bars, toolbar, dock, document
+/// tabs, Home Screen, floating panels, dialogs or canvas context menus. The host page owns every
+/// other control (through the bridge, `ab_bridge`).
+pub fn canvas_only() -> bool {
+    on()
 }
 
 /// The product name shown to users in embedded mode.
@@ -125,5 +148,46 @@ mod tests {
         for i in &items {
             assert!(!i.label.contains("PhotoCraft"), "{}: {}", i.id, i.label);
         }
+    }
+
+    /// Whole app, real frames: embedded draws no button, menu, tab, panel or dialog (only the
+    /// canvas on the host's backdrop); off, upstream's chrome is back.
+    #[test]
+    fn canvas_only_draws_no_chrome_and_off_is_upstream() {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let harness = || {
+            let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).with_max_steps(64).build_eframe(|cc| {
+                crate::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+                let mut s = photocraft_engine::Session::new();
+                s.execute("file.new", serde_json::json!({"width": 64, "height": 64})).unwrap();
+                crate::PhotocraftApp::new(s, crate::Services::default())
+            });
+            h.run_steps(4);
+            // A dialog the user could have opened from a menu (Gaussian Blur…).
+            let ctx = h.ctx.clone();
+            crate::menus::invoke(h.state_mut(), &ctx, "filter.blur.gaussianBlur", serde_json::json!({})).unwrap();
+            h.run_steps(4);
+            assert!(!h.state().ui.dialogs.is_empty());
+            h
+        };
+        let widgets = |h: &Harness<'_, crate::PhotocraftApp>| {
+            [Role::Button, Role::MenuItem, Role::Tab, Role::CheckBox, Role::Slider, Role::TextInput, Role::Window]
+                .into_iter()
+                .map(|r| h.query_all_by_role(r).count())
+                .sum::<usize>()
+        };
+
+        set_on_for_this_thread(Some(true));
+        let h = harness();
+        let on = widgets(&h);
+        set_on_for_this_thread(Some(false));
+        let h2 = harness();
+        let off = widgets(&h2);
+        set_on_for_this_thread(None);
+        drop((h, h2));
+        assert_eq!(on, 0, "embedded must draw only the canvas");
+        assert!(off >= 10, "off = upstream chrome ({off} widgets)");
     }
 }

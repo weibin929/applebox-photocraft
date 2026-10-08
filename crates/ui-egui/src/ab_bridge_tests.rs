@@ -117,6 +117,33 @@ fn tool_letters_map_to_the_first_batch_only() {
 }
 
 #[test]
+fn canvas_input_filter() {
+    let key = |key, pressed, modifiers| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+    let mut tool = Tool::Brush;
+    let mut ev = vec![
+        key(Key::W, true, Modifiers::NONE),
+        key(Key::W, false, Modifiers::NONE),
+        key(Key::Z, true, Modifiers::COMMAND),
+        key(Key::S, true, Modifiers::COMMAND),
+        key(Key::C, true, Modifiers::COMMAND), // ⌘C after upstream's clipboard_keys
+        key(Key::Tab, true, Modifiers::NONE),
+        key(Key::Enter, true, Modifiers::NONE),
+        egui::Event::Text("w".into()),
+        egui::Event::Paste("x".into()),
+        egui::Event::PointerMoved(egui::pos2(1.0, 2.0)),
+    ];
+    filter_canvas_input(&mut tool, &mut ev);
+    assert_eq!(tool, Tool::MagicWand, "W picks the Magic Wand, not upstream's Quick Selection");
+    assert_eq!(ev, vec![key(Key::Z, true, Modifiers::COMMAND), key(Key::Enter, true, Modifiers::NONE), egui::Event::PointerMoved(egui::pos2(1.0, 2.0))]);
+    // M toggles rectangle/ellipse once per press, not per auto-repeat.
+    let mut tool = Tool::RectMarquee;
+    let mut ev =
+        vec![key(Key::M, true, Modifiers::NONE), egui::Event::Key { key: Key::M, physical_key: None, pressed: true, repeat: true, modifiers: Modifiers::NONE }];
+    filter_canvas_input(&mut tool, &mut ev);
+    assert_eq!((tool, ev.len()), (Tool::EllipseMarquee, 0));
+}
+
+#[test]
 fn state_digest_shape() {
     let inspect = json!({
         "tool": "Brush", "toolOptions": {"tolerance": 32.0, "contiguous": true},

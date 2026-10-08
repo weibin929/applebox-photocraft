@@ -967,6 +967,10 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let n = app.session.documents().len();
     // Files opening in the background (#210) have tabs before they have documents.
     let opening = !app.jobs.opens.is_empty();
+    let canvas_only = crate::embedded::canvas_only();
+    if canvas_only && n == 0 {
+        return; // the host's backdrop until its document opens
+    }
     if !opening && app.ui.chrome.shows_home(n, app.session.prefs().general.auto_show_home_screen) {
         start_screen(app, ui);
         return;
@@ -976,7 +980,7 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         paint_dots(ui, ui.available_rect_before_wrap());
         return;
     }
-    if !app.ui.view.hides_tabs() || opening {
+    if !canvas_only && (!app.ui.view.hides_tabs() || opening) {
         app.tab_strip = Some(tabs(app, ui));
         drop_slot_line(app, ui);
     }
@@ -1797,7 +1801,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // Right-click while transforming: switch the box's mode (Free Transform, Scale, Rotate,
         // Skew, Distort, Perspective).
         let transforming = app.ui.transform.as_ref().is_some_and(|t| t.warp.is_none());
-        if response.secondary_clicked()
+        // Embedded: no canvas context menus (transform modes, layers under the pointer, tool menu).
+        let menus = !crate::embedded::canvas_only();
+        if menus
+            && response.secondary_clicked()
             && transforming
             && let Some(p) = response.interact_pointer_pos()
         {
@@ -1808,7 +1815,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             (buttons.started, buttons.dragged, buttons.stopped, buttons.clicked) = (false, false, false, false);
         }
         // Right-click with the Move tool, or ⌘/Ctrl+right-click: the layers under the pointer.
-        if response.secondary_clicked()
+        if menus
+            && response.secondary_clicked()
             && !transforming
             && crate::layer_pick_ui::is_gesture(tool, mods)
             && let Some(p) = response.interact_pointer_pos()
@@ -1817,7 +1825,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             app.ui.canvas_tool_menu = None;
             crate::layer_pick_ui::open(app, [p.x, p.y], d[0], d[1]);
         }
-        if response.secondary_clicked()
+        if menus
+            && response.secondary_clicked()
             && !transforming
             && !crate::layer_pick_ui::is_gesture(tool, mods)
             && let Some(p) = response.interact_pointer_pos()
