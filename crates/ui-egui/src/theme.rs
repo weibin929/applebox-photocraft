@@ -507,6 +507,9 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
         s.spacing.scroll = if t.bevel { egui::style::ScrollStyle::solid() } else { egui::style::ScrollStyle::thin() };
         s.spacing.tooltip_width = 280.0;
     });
+    // Apple Box fork: in embedded mode the host palette replaces the theme above (appearance only;
+    // the theme menu is hidden there, so this is the only look the user sees).
+    crate::applebox_theme::apply_if(ctx, crate::embedded::on());
 }
 
 /// Seconds the pointer rests on a control before its tooltip shows.

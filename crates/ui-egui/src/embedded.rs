@@ -59,13 +59,10 @@ pub fn hidden(id: &str) -> bool {
 }
 
 /// Hook for the host's colour scheme, kept apart from the brand hiding above: called once when
-/// embedded mode turns on, after the app's own theme is set up. Empty for now; the host's palette
-/// (egui `Visuals`) lands here in a later step, read with `ctx.global_style()` / `ctx.set_visuals`.
+/// embedded mode turns on, after the app's own theme is set up (`theme::apply` also calls it, so a
+/// later theme change keeps the host look). The palette itself lives in `applebox_theme`.
 pub fn apply_embedded_visuals(ctx: &egui::Context) {
-    if !on() {
-        return;
-    }
-    let _ = ctx;
+    crate::applebox_theme::apply_if(ctx, on());
 }
 
 /// Drop the hidden commands from a menu list (`menus::menu_items`).
