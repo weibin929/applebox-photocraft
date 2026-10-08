@@ -39,15 +39,15 @@ jobs:
           curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
             | tar -xz -C "$HOME/.cargo/bin" trunk
           trunk --version
-      - name: Embedded-mode tests (Rust)
-        run: cargo test -p photocraft-ui-egui embedded -- --nocapture
+      - name: Embedded-mode and host-bridge tests (Rust)
+        run: cargo test -p photocraft-ui-egui --lib -- embedded ab_bridge applebox_theme --nocapture
       - name: Build (trunk, wasm-release profile, wasm-opt -Oz)
         run: packaging/web/package.sh
       - name: Check the host bridge is exported
         run: |
           set -euo pipefail
           js=$(ls dist/web/photocraft-web-*.js | head -1)
-          for f in open_bytes set_host_writer host_command set_embedded; do
+          for f in open_bytes set_host_writer host_command set_embedded host_control set_host_events; do
             grep -q "$f" "$js" || { echo "missing export: $f" >&2; exit 1; }
           done
           grep -q 'data-initializer\|initializer' dist/web/index.html || echo "note: initializer wiring not visible in index.html"

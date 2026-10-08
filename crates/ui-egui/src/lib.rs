@@ -14,12 +14,14 @@ macro_rules! tl {
     };
 }
 
+pub mod ab_bridge;
 pub mod actions;
 pub mod adjust_dialog;
 pub mod adjust_editors;
 pub mod adjust_preview;
 pub mod adjust_ui;
 pub mod analysis_ui;
+pub mod applebox_theme;
 pub mod artboard_ui;
 mod brand;
 pub mod brush_panel;
@@ -50,10 +52,9 @@ pub mod discard_ui;
 pub mod distort_ui;
 pub mod doc_props_ui;
 pub mod dock;
+pub mod embedded;
 pub mod enable_rules;
 pub mod eraser_ui;
-pub mod applebox_theme;
-pub mod embedded;
 pub mod export_dialog;
 pub mod file_open;
 pub mod file_ui;
@@ -1256,7 +1257,7 @@ pub fn surface_fingerprint(s: &photocraft_raster::Surface) -> u64 {
 }
 
 /// Square thumbnail of the canvas area, letterboxed, sampling `f(x, y)` in document space.
-fn thumb_image(doc: &Document, side: usize, mut f: impl FnMut(i32, i32) -> [f32; 4]) -> egui::ColorImage {
+pub(crate) fn thumb_image(doc: &Document, side: usize, mut f: impl FnMut(i32, i32) -> [f32; 4]) -> egui::ColorImage {
     let (w, h) = (doc.size.width.max(1) as f32, doc.size.height.max(1) as f32);
     let scale = w.max(h) / side as f32;
     let (ox, oy) = ((side as f32 - w / scale) / 2.0, (side as f32 - h / scale) / 2.0);

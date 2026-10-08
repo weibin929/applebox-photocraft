@@ -2,8 +2,11 @@
 // The host page (same origin, the parent frame) talks to the editor with postMessage:
 //   host → editor  { type: 'lc-pc-open', name, bytes }   open a file (ArrayBuffer)
 //   host → editor  { type: 'lc-pc-command', cmd }        'save_psd' | 'export_png'
+//   host → editor  { type: 'lc-pc-call', id, method, params }   bridge v2: one control request (allow-listed)
+//   editor → host  { type: 'lc-pc-reply', id, ok, result | error }
+//   editor → host  { type: 'lc-pc-state', seq, … }        the editor's state when it changed; order by seq
 //   editor → host  { type: 'lc-pc-progress', loaded, total }
-//   editor → host  { type: 'lc-pc-ready', backend }
+//   editor → host  { type: 'lc-pc-ready', backend, bridge }   bridge = 2 when lc-pc-call is available
 //   editor → host  { type: 'lc-pc-file', name, kind, bytes }   a saved/exported file (ArrayBuffer, transferred)
 //   editor → host  { type: 'lc-pc-error', message }
 // Nothing here talks to any server; the host decides what to do with the files.
@@ -19,13 +22,23 @@ export default function initializer() {
       const buf = data.slice().buffer;
       post({ type: 'lc-pc-file', name, kind, bytes: buf }, [buf]);
     });
+    const v2 = typeof b.host_control === 'function' && typeof b.set_host_events === 'function';
+    if (v2) {
+      b.set_host_events((s) => {
+        let m;
+        try { m = JSON.parse(s); } catch (e) { return; }
+        if (m.type === 'reply') post({ type: 'lc-pc-reply', id: m.id, ok: !!m.ok, result: m.result, error: m.error });
+        else if (m.type === 'lc-pc-state') post(m);
+      });
+    }
     addEventListener('message', (e) => {
       if (e.origin !== ORIGIN || e.source !== window.parent) return;
       const m = e.data || {};
       if (m.type === 'lc-pc-open' && m.bytes) b.open_bytes(String(m.name || 'document'), new Uint8Array(m.bytes));
       else if (m.type === 'lc-pc-command') b.host_command(String(m.cmd || ''));
+      else if (m.type === 'lc-pc-call' && v2) b.host_control(m.id >>> 0, String(m.method || ''), JSON.stringify(m.params || {}));
     });
-    post({ type: 'lc-pc-ready', backend: navigator.gpu ? 'webgpu' : 'webgl2' });
+    post({ type: 'lc-pc-ready', backend: navigator.gpu ? 'webgpu' : 'webgl2', bridge: v2 ? 2 : 1 });
   }
 
   return {

@@ -3823,6 +3823,7 @@ dependencies = [
  "photocraft-io",
  "photocraft-ui-egui",
  "rfd",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

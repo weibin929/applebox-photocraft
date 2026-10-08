@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Image};
 use photocraft_doc::Document;
 use photocraft_engine::Session;
+use photocraft_ui_egui::control::ControlRequest;
 use photocraft_ui_egui::theme::ThemeKind;
-use photocraft_ui_egui::{PhotocraftApp, Services};
+use photocraft_ui_egui::{PhotocraftApp, Services, ab_bridge};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -24,6 +25,13 @@ thread_local! {
     // Files the host sent before eframe created the app (the JS bindings, and so `lc-pc-ready`,
     // exist a moment before the app does): kept here and moved into the inbox when it appears.
     static EARLY_OPENS: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    // Bridge v2 (`photocraft_ui_egui::ab_bridge`): the control channel into the app, replies still
+    // owed to the host, `ab.*` calls waiting for the frame, the host's event callback, the digest.
+    static CONTROL_TX: std::cell::RefCell<Option<std::sync::mpsc::Sender<ControlRequest>>> = const { std::cell::RefCell::new(None) };
+    static PENDING_REPLIES: std::cell::RefCell<Vec<(u32, std::sync::mpsc::Receiver<serde_json::Value>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static AB_CALLS: std::cell::RefCell<Vec<(u32, String, serde_json::Value)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HOST_EVENTS: std::cell::RefCell<Option<js_sys::Function>> = const { std::cell::RefCell::new(None) };
+    static DIGEST: std::cell::RefCell<ab_bridge::Digest> = std::cell::RefCell::new(ab_bridge::Digest::default());
 }
 
 /// Host → editor: open a file's bytes as if it had been dropped on the canvas.
@@ -81,6 +89,104 @@ pub fn set_embedded(on: bool) {
             ctx.request_repaint();
         }
     });
+}
+
+/// Host → editor (bridge v2): run a control method (`ab_bridge::METHODS`, allow-listed). The
+/// reply comes back through the events callback as `{type:"reply", id, ok, result|error}`; a
+/// refused request replies at once with `ok: false`.
+#[wasm_bindgen]
+pub fn host_control(id: u32, method: String, params_json: String) {
+    let params: serde_json::Value = serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Null);
+    if let Err(e) = ab_bridge::request_allowed(&method, &params) {
+        emit(&serde_json::json!({"type": "reply", "id": id, "ok": false, "error": e}));
+        return;
+    }
+    if method.starts_with("ab.") {
+        // These need `&mut app`: run in the next frame.
+        AB_CALLS.with(|c| c.borrow_mut().push((id, method, params)));
+    } else {
+        let (req, rx) = ControlRequest::new(method, params);
+        let sent = CONTROL_TX.with(|t| t.borrow().as_ref().is_some_and(|tx| tx.send(req).is_ok()));
+        if !sent {
+            emit(&serde_json::json!({"type": "reply", "id": id, "ok": false, "error": "the editor is not running yet"}));
+            return;
+        }
+        PENDING_REPLIES.with(|p| p.borrow_mut().push((id, rx)));
+    }
+    HOST_INBOX.with(|h| {
+        if let Some((_, ctx)) = &*h.borrow() {
+            ctx.request_repaint();
+        }
+    });
+}
+
+/// Editor → host: `cb(json)` for replies and `lc-pc-state` digests.
+#[wasm_bindgen]
+pub fn set_host_events(cb: js_sys::Function) {
+    HOST_EVENTS.with(|e| *e.borrow_mut() = Some(cb));
+    DIGEST.with(|d| d.borrow_mut().resend()); // a new listener gets the current state (seq keeps counting)
+    HOST_INBOX.with(|h| {
+        if let Some((_, ctx)) = &*h.borrow() {
+            ctx.request_repaint();
+        }
+    });
+}
+
+fn emit(v: &serde_json::Value) {
+    HOST_EVENTS.with(|e| {
+        if let Some(cb) = &*e.borrow()
+            && let Err(err) = cb.call1(&wasm_bindgen::JsValue::NULL, &v.to_string().into())
+        {
+            log::error!("host events callback failed: {err:?}");
+        }
+    });
+}
+
+/// Once per frame after `app.logic`: deliver control replies, run `ab.*` calls, and send the state
+/// digest when it changed (built right after a reply, else at most every 100 ms).
+fn pump_bridge(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if HOST_EVENTS.with(|e| e.borrow().is_none()) {
+        return;
+    }
+    let mut replied = false;
+    let mut done = Vec::new();
+    PENDING_REPLIES.with(|p| {
+        p.borrow_mut().retain(|(id, rx)| match rx.try_recv() {
+            Ok(v) => {
+                done.push((*id, v));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                done.push((*id, serde_json::json!({"ok": false, "error": "dropped"})));
+                false
+            }
+        })
+    });
+    for (id, mut v) in done {
+        v["type"] = "reply".into();
+        v["id"] = id.into();
+        emit(&v);
+        replied = true;
+    }
+    let calls: Vec<_> = AB_CALLS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    for (id, method, params) in calls {
+        emit(&match ab_bridge::run_ab(app, &method, &params) {
+            Ok(v) => serde_json::json!({"type": "reply", "id": id, "ok": true, "result": v}),
+            Err(e) => serde_json::json!({"type": "reply", "id": id, "ok": false, "error": e}),
+        });
+        replied = true;
+    }
+    let now = js_sys::Date::now();
+    if DIGEST.with(|d| d.borrow().due(now, replied)) {
+        let state = ab_bridge::state_from(&photocraft_ui_egui::control::inspect(app, ctx), ab_bridge::StateExtra::of(app));
+        if let Some(s) = DIGEST.with(|d| d.borrow_mut().next(state, now)) {
+            emit(&s);
+        }
+    } else {
+        // Something ran this frame; look again once the interval is over.
+        ctx.request_repaint_after(std::time::Duration::from_millis(ab_bridge::STATE_INTERVAL_MS as u64));
+    }
 }
 
 /// Hand `bytes` to the host writer; `false` when none is installed (the caller then downloads).
@@ -156,7 +262,9 @@ pub fn start() {
                     HOST_INBOX.with(|h| *h.borrow_mut() = Some((inbox.clone(), cc.egui_ctx.clone())));
                     adopt_early_opens(&inbox, &cc.egui_ctx);
                     photocraft_ui_egui::embedded::apply_embedded_visuals(&cc.egui_ctx);
-                    let mut app = PhotocraftApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    let (control_tx, control_rx) = std::sync::mpsc::channel();
+                    CONTROL_TX.with(|t| *t.borrow_mut() = Some(control_tx));
+                    let mut app = PhotocraftApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone())).with_control(control_rx);
                     listen_pen(&pen_target, app.stylus.feed.clone());
                     app.set_theme(&cc.egui_ctx, ThemeKind::Pro);
                     if let Some(rs) = cc.wgpu_render_state.clone()
@@ -238,6 +346,7 @@ impl eframe::App for WebShell {
         }
         run_host_commands(&mut self.app, ctx);
         self.app.logic(ctx, frame);
+        pump_bridge(&mut self.app, ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
