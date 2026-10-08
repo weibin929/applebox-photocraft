@@ -352,6 +352,12 @@ impl eframe::App for WebShell {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.ui(ui, frame);
     }
+
+    // The app's hook feeds queued synthetic input (`ui.key` from the host bridge) and turns
+    // clipboard events back into key presses; without forwarding it, `ui.key` never arrives.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        eframe::App::raw_input_hook(&mut self.app, ctx, raw_input);
+    }
 }
 
 fn services(inbox: Inbox, ctx: egui::Context) -> Services {
