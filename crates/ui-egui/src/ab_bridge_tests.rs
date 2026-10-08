@@ -79,7 +79,9 @@ fn allows_the_first_batch() {
 fn keys() {
     assert!(key_allowed(Key::Z, Modifiers::COMMAND));
     assert!(key_allowed(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT));
-    assert!(key_allowed(Key::D, Modifiers::COMMAND));
+    // 84 §3: Delete / Backspace clear the selected pixels — bare keys only.
+    assert!(key_allowed(Key::Delete, Modifiers::NONE));
+    assert!(key_allowed(Key::Backspace, Modifiers::NONE));
     assert!(key_allowed(Key::OpenBracket, Modifiers::NONE));
     assert!(key_allowed(Key::Enter, Modifiers::NONE));
     for (k, m) in [
@@ -91,8 +93,12 @@ fn keys() {
         (Key::Tab, Modifiers::NONE),
         (Key::F, Modifiers::NONE),
         (Key::F1, Modifiers::NONE),
-        (Key::Delete, Modifiers::NONE),
-        (Key::Backspace, Modifiers::NONE),
+        (Key::Backspace, Modifiers::ALT),     // fill with the foreground colour
+        (Key::Backspace, Modifiers::COMMAND), // fill with the background colour
+        (Key::Backspace, Modifiers::SHIFT),   // Fill… dialog
+        (Key::Delete, Modifiers::SHIFT),
+        (Key::D, Modifiers::COMMAND), // not in 84 §3's list (the host has Deselect)
+        (Key::T, Modifiers::COMMAND), // not in 84 §3's list (the host has Free Transform)
         (Key::G, Modifiers::NONE),
         (Key::B, Modifiers::NONE), // letters go through tool_for_key, never to upstream
         (Key::W, Modifiers::NONE),

@@ -82,6 +82,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
         && !erase
         && !layer_menu
         && has_brush_picker(tool)
+        && !crate::embedded::canvas_only()
         && let Some(p) = response.interact_pointer_pos()
     {
         app.ui.brush_picker = Some([p.x, p.y]);
@@ -111,7 +112,7 @@ pub fn pointer_secondary(app: &mut PhotocraftApp, down: bool, mods: egui::Modifi
         app.secondary_erase = down;
         return true;
     }
-    if down && has_brush_picker(tool) {
+    if down && has_brush_picker(tool) && !crate::embedded::canvas_only() {
         app.ui.brush_picker = Some(at);
     }
     false
@@ -121,7 +122,8 @@ pub fn pointer_secondary(app: &mut PhotocraftApp, down: bool, mods: egui::Modifi
 /// the options-bar chip's; a click outside, Escape or Enter closes it.
 pub fn show_picker(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let Some([x, y]) = app.ui.brush_picker else { return };
-    if !has_brush_picker(app.ui.tool) || ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) {
+    // Embedded: no canvas pop-ups (a picker opened before the mode switched closes too).
+    if !has_brush_picker(app.ui.tool) || crate::embedded::canvas_only() || ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) {
         app.ui.brush_picker = None;
         return;
     }

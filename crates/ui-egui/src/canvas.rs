@@ -971,7 +971,7 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if canvas_only && n == 0 {
         return; // the host's backdrop until its document opens
     }
-    if !opening && app.ui.chrome.shows_home(n, app.session.prefs().general.auto_show_home_screen) {
+    if !opening && !canvas_only && app.ui.chrome.shows_home(n, app.session.prefs().general.auto_show_home_screen) {
         start_screen(app, ui);
         return;
     }
@@ -1960,8 +1960,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         let resizing = crate::brush_resize::draw(app, &painter, &xf);
         draw_transform_controls(app, &painter, &xf);
         crate::paint_mouse::show_picker(app, &ctx);
-        crate::layer_pick_ui::show(app, &ctx);
-        crate::canvas_tool_menu::show(app, &ctx);
+        if !crate::embedded::canvas_only() {
+            crate::layer_pick_ui::show(app, &ctx);
+            crate::canvas_tool_menu::show(app, &ctx);
+        }
         crate::snap_ui::draw(app, &painter, &xf);
         if border == photocraft_engine::prefs::CanvasBorder::Line {
             painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);

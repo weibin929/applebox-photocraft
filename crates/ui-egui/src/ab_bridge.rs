@@ -122,11 +122,11 @@ pub fn key_allowed(key: egui::Key, m: egui::Modifiers) -> bool {
     match key {
         Z => cmd && !m.alt,                            // undo / redo (⇧)
         Y => cmd && !m.shift && !m.alt,                // redo
-        D => cmd && !m.shift && !m.alt,                // deselect
-        T => cmd && !m.shift && !m.alt,                // free transform
         Equals | Plus | Minus | Num0 => cmd && !m.alt, // zoom in / out / fit
         OpenBracket | CloseBracket => !cmd && !m.alt,  // brush size
         Enter | Escape | Space => !cmd,                // commit / cancel / hold for the hand
+        // Clear the selected pixels; bare keys only (⌥⌫ / ⌘⌫ fill, ⇧⌫ opens Fill…).
+        Delete | Backspace => !cmd && !m.alt && !m.shift,
         _ => false,
     }
 }

@@ -190,4 +190,148 @@ mod tests {
         assert_eq!(on, 0, "embedded must draw only the canvas");
         assert!(off >= 10, "off = upstream chrome ({off} widgets)");
     }
+
+    // ── Whole-app regressions for canvas_only (real frames, this thread only) ──────────────────
+
+    type H = egui_kittest::Harness<'static, crate::PhotocraftApp>;
+
+    fn app_with(build: impl FnOnce(&mut photocraft_engine::Session) + 'static, tool: crate::state::Tool) -> H {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).with_max_steps(64).build_eframe(move |cc| {
+            crate::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+            let mut s = photocraft_engine::Session::new();
+            s.execute("file.new", serde_json::json!({"width": 64, "height": 64})).unwrap();
+            build(&mut s);
+            let mut app = crate::PhotocraftApp::new(s, crate::Services::default());
+            app.ui.tool = tool;
+            app
+        });
+        h.run_steps(4);
+        h
+    }
+
+    fn widgets(h: &H) -> usize {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        [Role::Button, Role::MenuItem, Role::Tab, Role::CheckBox, Role::Slider, Role::TextInput, Role::Window]
+            .into_iter()
+            .map(|r| h.query_all_by_role(r).count())
+            .sum()
+    }
+
+    fn click(h: &mut H, button: egui::PointerButton) {
+        let p = h.state().last_canvas_rect.center();
+        h.event(egui::Event::PointerMoved(p));
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: p, button, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: p, button, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn canvas_only_right_click_opens_no_picker_or_menu() {
+        use crate::state::Tool;
+        set_on_for_this_thread(Some(true));
+        for tool in [Tool::Brush, Tool::Eraser, Tool::Move, Tool::RectMarquee] {
+            let mut h = app_with(|_| {}, tool);
+            click(&mut h, egui::PointerButton::Secondary);
+            let ui = &h.state().ui;
+            assert!(ui.brush_picker.is_none() && ui.layer_menu.is_none() && ui.canvas_tool_menu.is_none(), "{tool:?}: a canvas pop-up opened");
+            assert_eq!(widgets(&h), 0, "{tool:?}: something besides the canvas is drawn");
+        }
+        // A picker left open from before the switch is not drawn either.
+        let mut h = app_with(|_| {}, Tool::Brush);
+        h.state_mut().ui.brush_picker = Some([300.0, 300.0]);
+        h.run_steps(3);
+        assert_eq!(widgets(&h), 0);
+        set_on_for_this_thread(Some(false));
+        let mut h = app_with(|_| {}, Tool::Brush);
+        click(&mut h, egui::PointerButton::Secondary);
+        assert!(h.state().ui.brush_picker.is_some(), "off: upstream's Brush Preset picker");
+        set_on_for_this_thread(None);
+    }
+
+    #[test]
+    fn canvas_only_never_draws_the_home_screen_over_a_document() {
+        set_on_for_this_thread(Some(false));
+        let mut h = app_with(|_| {}, crate::state::Tool::Brush);
+        h.state_mut().ui.chrome.home = Some(1); // Home Screen shown with one document open
+        h.run_steps(3);
+        let upstream = widgets(&h);
+        set_on_for_this_thread(Some(true));
+        h.run_steps(3);
+        let embedded = widgets(&h);
+        set_on_for_this_thread(None);
+        assert!(upstream > 0);
+        assert_eq!(embedded, 0, "embedded: the canvas, not the Home Screen");
+    }
+
+    #[test]
+    fn canvas_only_delete_clears_the_selected_pixels() {
+        set_on_for_this_thread(Some(true));
+        let mut h = app_with(
+            |s| {
+                s.execute("layer.new.layer", serde_json::json!({})).unwrap();
+                s.execute("select.rect", serde_json::json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+                s.execute("edit.fill", serde_json::json!({"color": "#ff0000"})).unwrap();
+            },
+            crate::state::Tool::RectMarquee,
+        );
+        let alpha = |h: &H| {
+            let st = h.state().session.active().unwrap();
+            let s = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+            let mut px = [0.0f32; 8];
+            let n = s.channels();
+            s.read_pixel(12, 12, &mut px[..n]);
+            px[n - 1]
+        };
+        assert!(alpha(&h) > 0.9);
+        // The key passes the embedded filter, then the app clears the selection's pixels.
+        let mut ev = vec![egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }];
+        let mut tool = h.state().ui.tool;
+        crate::ab_bridge::filter_canvas_input(&mut tool, &mut ev);
+        assert_eq!(ev.len(), 1);
+        h.key_press(egui::Key::Delete);
+        h.run_steps(3);
+        set_on_for_this_thread(None);
+        assert!(alpha(&h) < 0.01, "Delete clears the selected pixels in embedded mode");
+    }
+
+    /// The rasterize prompt in embedded mode: not drawn, reported in the state digest, answered
+    /// by the host with ui.dialog.confirm / ui.dialog.cancel.
+    #[test]
+    fn canvas_only_rasterize_prompt_goes_through_state_and_host_answers() {
+        use crate::ab_bridge::{StateExtra, request_allowed, state_from};
+        use crate::control::{ControlRequest, Outcome, handle, inspect};
+        set_on_for_this_thread(Some(true));
+        for answer in ["ui.dialog.cancel", "ui.dialog.confirm"] {
+            let mut h = app_with(
+                |s| {
+                    s.execute("type.create", serde_json::json!({"x": 4, "y": 40, "text": "AB", "size": 30})).unwrap();
+                },
+                crate::state::Tool::Brush,
+            );
+            click(&mut h, egui::PointerButton::Primary);
+            assert_eq!(widgets(&h), 0, "the prompt is not drawn");
+            let ctx = h.ctx.clone();
+            let s = state_from(&inspect(h.state(), &ctx), &StateExtra::of(h.state()));
+            assert_eq!(s["dialog"]["fields"]["__rasterize"], "type", "{}", s["dialog"]);
+            let active = s["active"].as_u64().unwrap();
+            let kind_of = |s: &serde_json::Value| s["layers"].as_array().unwrap().iter().find(|l| l["id"] == active).unwrap()["kind"].clone();
+            assert_eq!(kind_of(&s), "type");
+            let params = serde_json::json!({"dialog": s["dialog"]["id"]});
+            request_allowed(answer, &params).unwrap();
+            let (req, _rx) = ControlRequest::new(answer, params);
+            if let Outcome::Done(v) = handle(h.state_mut(), &ctx, &req) {
+                assert_eq!(v["ok"], true, "{answer}: {v}");
+            }
+            h.run_steps(3);
+            assert!(h.state().ui.dialogs.is_empty(), "{answer} closes it");
+            let s = state_from(&inspect(h.state(), &ctx), &StateExtra::of(h.state()));
+            assert!(s["dialog"].is_null());
+            let expect = if answer == "ui.dialog.confirm" { "pixel" } else { "type" };
+            assert_eq!(kind_of(&s), expect, "{answer}");
+        }
+        set_on_for_this_thread(None);
+    }
 }
