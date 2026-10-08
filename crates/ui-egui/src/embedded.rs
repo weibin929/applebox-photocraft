@@ -65,7 +65,7 @@ pub fn apply_embedded_visuals(ctx: &egui::Context) {
     if !on() {
         return;
     }
-    let mut visuals = ctx.style().visuals.clone();
+    let mut visuals = ctx.global_style().visuals.clone();
     visuals.selection.bg_fill = egui::Color32::from_rgb(0xFF, 0x3D, 0x7F);
     ctx.set_visuals(visuals);
 }
