@@ -21,6 +21,9 @@ thread_local! {
     static HOST_WRITER: std::cell::RefCell<Option<js_sys::Function>> = const { std::cell::RefCell::new(None) };
     static PENDING_CMDS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     static HOST_INBOX: std::cell::RefCell<Option<(Inbox, egui::Context)>> = const { std::cell::RefCell::new(None) };
+    // Files the host sent before eframe created the app (the JS bindings, and so `lc-pc-ready`,
+    // exist a moment before the app does): kept here and moved into the inbox when it appears.
+    static EARLY_OPENS: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Host → editor: open a file's bytes as if it had been dropped on the canvas.
@@ -31,9 +34,19 @@ pub fn open_bytes(name: String, bytes: Vec<u8>) {
             inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
             ctx.request_repaint();
         } else {
-            log::error!("open_bytes before the app started");
+            log::info!("open_bytes before the app started: {name} queued until it does");
+            EARLY_OPENS.with(|q| q.borrow_mut().push((name, bytes)));
         }
     });
+}
+
+/// Called once the app exists: hand over everything `open_bytes` queued before that.
+fn adopt_early_opens(inbox: &Inbox, ctx: &egui::Context) {
+    let early: Vec<(String, Vec<u8>)> = EARLY_OPENS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if !early.is_empty() {
+        inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(early);
+        ctx.request_repaint();
+    }
 }
 
 /// Editor → host: `cb(name, Uint8Array)` for every Save / Export instead of a browser download.
@@ -141,6 +154,8 @@ pub fn start() {
                     PhotocraftApp::setup_context(&cc.egui_ctx, ThemeKind::Pro);
                     let inbox: Inbox = Arc::default();
                     HOST_INBOX.with(|h| *h.borrow_mut() = Some((inbox.clone(), cc.egui_ctx.clone())));
+                    adopt_early_opens(&inbox, &cc.egui_ctx);
+                    photocraft_ui_egui::embedded::apply_embedded_visuals(&cc.egui_ctx);
                     let mut app = PhotocraftApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
                     listen_pen(&pen_target, app.stylus.feed.clone());
                     app.set_theme(&cc.egui_ctx, ThemeKind::Pro);
