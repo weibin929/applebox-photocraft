@@ -421,6 +421,19 @@ fn adjustment_round_trip_covers_every_field_and_high_precision_levels() {
         "levels",
         json!({"lightness": ch(11.1, 1.4321, 233.3, 2.5, 250.5), "a": ch(20.2, 0.7777, 210.1, 8.0, 247.0), "b": ch(5.05, 1.9999, 249.9, 0.5, 254.5)}),
     );
+    // Levels at the parser's edges (gamma 0.01..9.99, inBlack ≤ 253, inWhite ≤ 255, inWhite ≥ inBlack + 2),
+    // the composite and every channel off their defaults at once, in each tone space.
+    for (mode, chans) in
+        [("rgb", ["red", "green", "blue"].as_slice()), ("cmyk", ["cyan", "magenta", "yellow", "black"].as_slice()), ("lab", ["lightness", "a", "b"].as_slice())]
+    {
+        let edges =
+            [ch(0.0, 0.01, 2.0, 0.0, 255.0), ch(253.0, 9.99, 255.0, 255.0, 0.0), ch(100.5, 0.01, 102.5, 1.0, 254.0), ch(253.0, 1.0, 255.0, 17.25, 17.25)];
+        let mut p = if mode == "lab" { json!({}) } else { ch(37.0, 9.99, 39.0, 3.0, 250.0) }; // Lab has no composite
+        for (i, c) in chans.iter().enumerate() {
+            p[*c] = edges[i % edges.len()].clone();
+        }
+        round_trips(mode, "levels", p);
+    }
     // Brightness/Contrast, legacy on.
     round_trips("rgb", "brightnessContrast", json!({"brightness": -37.5, "contrast": -80.25, "legacy": true}));
     // Hue/Saturation: colorize, and (separately) all six ranges off their defaults.

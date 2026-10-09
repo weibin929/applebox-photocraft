@@ -322,8 +322,11 @@ mod tests {
             let params = serde_json::json!({"dialog": s["dialog"]["id"]});
             request_allowed(answer, &params).unwrap();
             let (req, _rx) = ControlRequest::new(answer, params);
-            if let Outcome::Done(v) = handle(h.state_mut(), &ctx, &req) {
-                assert_eq!(v["ok"], true, "{answer}: {v}");
+            match handle(h.state_mut(), &ctx, &req) {
+                Outcome::Done(v) => assert_eq!(v["ok"], true, "{answer}: {v}"),
+                Outcome::AfterInput => panic!("{answer}: expected an immediate reply, got AfterInput"),
+                Outcome::AfterJob(job) => panic!("{answer}: expected an immediate reply, got AfterJob({job:?})"),
+                Outcome::Screenshot { .. } => panic!("{answer}: expected an immediate reply, got Screenshot"),
             }
             h.run_steps(3);
             assert!(h.state().ui.dialogs.is_empty(), "{answer} closes it");
